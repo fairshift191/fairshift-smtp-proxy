@@ -1,7 +1,7 @@
 import express from 'express'
 import nodemailer from 'nodemailer'
 
-const app  = express()
+export const app  = express()
 const PORT = process.env.PORT || 3000
 const SECRET = process.env.SMTP_PROXY_SECRET
 
@@ -21,13 +21,13 @@ function requireSecret(req, res, next) {
 }
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/health', (_, res) => res.json({ ok: true }))
+app.get('/health', (_, res) => res.json({ ok: true, delivery_receipt_version: 2 }))
 
 // ─── POST /verify — test SMTP credentials ────────────────────────────────────
 app.post('/verify', requireSecret, async (req, res) => {
   const { smtp_host, smtp_port, smtp_user, smtp_pass } = req.body
   if (!smtp_host || !smtp_user || !smtp_pass) {
-    return res.status(400).json({ ok: false, error: 'smtp_host, smtp_user, smtp_pass required' })
+    return res.status(400).json({ ok: false, verified: false, error: 'smtp_host, smtp_user, smtp_pass required' })
   }
   const port = parseInt(smtp_port || 587)
   try {
@@ -41,9 +41,9 @@ app.post('/verify', requireSecret, async (req, res) => {
       tls: { rejectUnauthorized: false },
     })
     await transporter.verify()
-    res.json({ ok: true })
+    res.json({ ok: true, verified: true })
   } catch (err) {
-    res.json({ ok: false, error: err.message })
+    res.json({ ok: false, verified: false, error: err.message })
   }
 })
 
@@ -56,7 +56,8 @@ function normaliseAttachments(attachments) {
   if (!Array.isArray(attachments) || !attachments.length) return undefined
   return attachments.map((file) => ({
     filename: file.filename,
-    content: file.content,
+    content: file?.content?.type === 'Buffer' && Array.isArray(file.content.data)
+      ? Buffer.from(file.content.data) : file.content,
     ...(file.encoding ? { encoding: file.encoding } : { encoding: 'base64' }),
     ...(file.contentType ? { contentType: file.contentType } : {}),
     ...(file.cid ? { cid: file.cid } : {}),
@@ -97,7 +98,8 @@ app.post('/send', requireSecret, async (req, res) => {
       ...(cc ? { cc } : {}),
       ...(bcc ? { bcc } : {}),
       ...(headers ? { headers } : {}),
-      ...(message_id ? { messageId: message_id } : {}),
+      ...((message_id || headers?.['Message-ID'] || headers?.['Message-Id'] || headers?.['message-id'])
+        ? { messageId: message_id || headers?.['Message-ID'] || headers?.['Message-Id'] || headers?.['message-id'] } : {}),
       attachments: normaliseAttachments(attachments),
     })
     const files = Array.isArray(attachments) ? attachments.length : 0
@@ -117,4 +119,4 @@ app.post('/send', requireSecret, async (req, res) => {
   }
 })
 
-app.listen(PORT, () => console.log(`fairshift-smtp-proxy listening on ${PORT}`))
+if (process.env.NODE_ENV !== 'test') app.listen(PORT, () => console.log(`fairshift-smtp-proxy listening on ${PORT}`))
